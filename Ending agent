@@ -1,0 +1,88 @@
+import socket
+import threading
+import time
+
+class Node:
+    def __init__(self, node_id, ip, port, initial_value, neighbors, dt, steps):
+        self.node_id = node_id
+        self.ip = ip
+        self.port = port
+        self.value = initial_value
+        self.neighbors = neighbors
+        self.dt = dt
+        self.steps = steps
+        self.received_values = {}
+        self.lock = threading.Lock()
+
+    def update_received_value(self, neighbor_id, neighbor_value):
+        with self.lock:
+            self.received_values[neighbor_id] = neighbor_value
+
+    def update_value(self):
+        with self.lock:
+            if self.received_values:
+                average_value = sum(self.received_values.values()) / len(self.received_values)
+                self.value = (self.value + average_value) / 2
+                self.received_values = {}
+
+    def start_server(self):
+        server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        server_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        server_socket.bind((self.ip, self.port))
+        server_socket.listen()
+        print(f"Node {self.node_id} listening on {self.ip}:{self.port}")
+        while True:
+            conn, addr = server_socket.accept()
+            threading.Thread(target=self.handle_client, args=(conn, addr)).start()
+
+    def handle_client(self, conn, addr):
+        data = conn.recv(1024)
+        if data:
+            neighbor_id, neighbor_value = data.decode().split(',')
+            self.update_received_value(neighbor_id, float(neighbor_value))
+            conn.sendall(b"ACK")
+        conn.close()
+
+    def run(self):
+        # Start the server thread
+        server_thread = threading.Thread(target=self.start_server)
+        server_thread.daemon = True
+        server_thread.start()
+
+        # Wait for a short period to ensure all servers are up
+        time.sleep(5)
+
+        for _ in range(self.steps):
+            for neighbor_ip, neighbor_port in self.neighbors:
+                try:
+                    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+                        s.connect((neighbor_ip, neighbor_port))
+                        message = f"{self.node_id},{self.value}"
+                        s.sendall(message.encode())
+                        data = s.recv(1024)
+                        if data == b"ACK":
+                            print(f"Node {self.node_id} sent value {self.value} to {neighbor_ip}:{neighbor_port}")
+                except socket.error as e:
+                    print(f"Error communicating with {neighbor_ip}:{neighbor_port} - {e}")
+            
+            self.update_value()
+            print(f"Node {self.node_id} current value: {self.value}")
+
+if __name__ == "__main__":
+    # Example configuration
+    node_id = 1
+    ip = '192.168.1.1'  # Replace with actual IP address of the node
+    port = 5000
+    initial_value = 0.9
+    dt = 0.1
+    steps = 100
+
+    # Define the neighbors (IP, port)
+    neighbors = [
+        ('192.168.1.2', 5001),
+        ('192.168.1.3', 5002)
+    ]
+
+    # Create and run the node
+    node = Node(node_id, ip, port, initial_value, neighbors, dt, steps)
+    node.run()
